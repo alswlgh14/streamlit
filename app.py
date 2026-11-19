@@ -15,7 +15,7 @@ COLORS = {"생존": "#007F83", "미생존": "#A46449"}
 
 @st.cache_data
 def load_passengers(path):
-    data = pd.read_csv(path, usecols=["survived", "pclass", "sex", "age"])
+    data = pd.read_csv(path, usecols=["survived", "pclass", "sex", "age", "fare"])
     return data.assign(
         객실=data["pclass"].map(CLASSES),
         성별=data["sex"].map(SEXES),
@@ -23,19 +23,23 @@ def load_passengers(path):
     )
 
 
-def survival_chart(data, group, order):
+def survival_chart(data, group, order, chart=px.bar):
     rates = (
         data.groupby(group, as_index=False, sort=False)
         .agg(생존율=("survived", "mean"), 인원=("survived", "size"), 생존=("survived", "sum"))
     )
-    figure = px.bar(
+    figure = chart(
         rates, x=group, y="생존율", text="생존율", custom_data=["생존", "인원"],
         category_orders={group: order}, color_discrete_sequence=["#007F83"],
     )
     figure.update_traces(
-        texttemplate="%{y:.1%}", textposition="outside", cliponaxis=False,
+        texttemplate="%{y:.1%}", cliponaxis=False,
         hovertemplate="%{x}<br>생존율 %{y:.1%}<br>%{customdata[0]}명 생존 / %{customdata[1]}명<extra></extra>",
     )
+    if chart is px.scatter:
+        figure.update_traces(mode="markers+text", marker_size=14, textposition="top center")
+    else:
+        figure.update_traces(textposition="outside")
     figure.update_yaxes(range=[0, 1.05], tickformat=".0%", title_text="생존율")
     figure.update_xaxes(title_text=None)
     figure.update_layout(height=265, margin=dict(l=8, r=8, t=18, b=8))
@@ -79,7 +83,7 @@ with left.container(border=True):
     st.plotly_chart(survival_chart(view, "객실", list(CLASSES.values())), width="stretch")
 with right.container(border=True):
     st.markdown("**성별 생존율**")
-    st.plotly_chart(survival_chart(view, "성별", list(SEXES.values())), width="stretch")
+    st.plotly_chart(survival_chart(view, "성별", list(SEXES.values()), px.scatter), width="stretch")
 
 with st.container(border=True):
     st.markdown("**나이대별 승객 수**")
@@ -103,8 +107,19 @@ with st.container(border=True):
     if view["age"].isna().any():
         st.caption(f"나이가 기록되지 않은 {view['age'].isna().sum():,}명은 이 차트에서 제외했어요.")
 
+with st.container(border=True):
+    st.markdown("**객실 등급과 생존 여부에 따른 운임 분포**")
+    fares = px.box(
+        view, x="객실", y="fare", color="결과", color_discrete_map=COLORS,
+        category_orders={"객실": list(CLASSES.values()), "결과": list(OUTCOMES.values())},
+        labels={"fare": "운임"}, points="outliers",
+    )
+    fares.update_layout(height=320, margin=dict(l=8, r=8, t=16, b=8), legend_title_text="")
+    st.plotly_chart(fares, width="stretch")
+    st.caption("상자 가운데 선은 중앙값이고, 상자는 가운데 50%의 운임 범위예요.")
+
 with st.expander(f"선택한 승객 데이터 · {len(view):,}명"):
-    table = view[["객실", "성별", "age", "결과"]].rename(columns={"age": "나이"})
+    table = view[["객실", "성별", "age", "fare", "결과"]].rename(columns={"age": "나이", "fare": "운임"})
     st.dataframe(table, hide_index=True, width="stretch")
     st.download_button(
         "선택한 데이터 CSV 저장",
