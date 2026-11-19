@@ -23,27 +23,80 @@ def load_passengers(path):
     )
 
 
-def survival_chart(data, group, order, chart=px.bar):
+def survival_chart(data, group, order):
     rates = (
         data.groupby(group, as_index=False, sort=False)
         .agg(생존율=("survived", "mean"), 인원=("survived", "size"), 생존=("survived", "sum"))
     )
-    figure = chart(
+    figure = px.bar(
         rates, x=group, y="생존율", text="생존율", custom_data=["생존", "인원"],
         category_orders={group: order}, color_discrete_sequence=["#007F83"],
     )
     figure.update_traces(
-        texttemplate="%{y:.1%}", cliponaxis=False,
+        texttemplate="%{y:.1%}", textposition="outside", cliponaxis=False,
         hovertemplate="%{x}<br>생존율 %{y:.1%}<br>%{customdata[0]}명 생존 / %{customdata[1]}명<extra></extra>",
     )
-    if chart is px.scatter:
-        figure.update_traces(mode="markers+text", marker_size=14, textposition="top center")
-    else:
-        figure.update_traces(textposition="outside")
     figure.update_yaxes(range=[0, 1.05], tickformat=".0%", title_text="생존율")
     figure.update_xaxes(title_text=None)
     figure.update_layout(height=265, margin=dict(l=8, r=8, t=18, b=8))
     return figure
+
+
+def show_survival_by_sex(data):
+    groups = data.groupby("성별")["survived"].agg(["sum", "size"])
+    shares = {}
+    rows = []
+    for label in SEXES.values():
+        if label not in groups.index:
+            continue
+        survivors, total = groups.loc[label]
+        share = survivors / total
+        shares[label] = share
+        rows.append(f"""
+        <div class="sex-share-row">
+          <div class="sex-share-label">
+            <span><strong>{label}</strong><small>{survivors:,}명 생존 / {total:,}명</small></span>
+            <strong class="sex-share-value">{share:.1%}</strong>
+          </div>
+          <div class="sex-share-track" aria-hidden="true">
+            <div style="width:{share:.6%}"></div>
+          </div>
+        </div>
+        """)
+
+    difference = ""
+    if len(shares) == 2:
+        gap = abs(shares["여성"] - shares["남성"]) * 100
+        difference = f'<div class="sex-share-gap">생존율 차이 <strong>{gap:.1f}%p</strong></div>'
+
+    st.html(f"""
+    <style>
+      .sex-share {{ padding: .4rem 0 .15rem; }}
+      .sex-share-row + .sex-share-row {{ margin-top: 1.2rem; }}
+      .sex-share-label {{
+        display: flex; align-items: baseline; justify-content: space-between;
+        gap: .75rem; margin-bottom: .5rem;
+      }}
+      .sex-share-label small {{
+        display: block; font-size: .79rem; line-height: 1.45; opacity: .72;
+      }}
+      .sex-share-value {{
+        font-size: 1.65rem; font-weight: 650; line-height: 1;
+        letter-spacing: -.035em; font-variant-numeric: tabular-nums;
+      }}
+      .sex-share-track {{
+        height: .625rem; overflow: hidden; border-radius: 3px;
+        background: color-mix(in srgb, currentColor 15%, transparent);
+      }}
+      .sex-share-track div {{ height: 100%; background: #168A8D; }}
+      .sex-share-gap {{
+        margin-top: 1.1rem; padding-top: .75rem; font-size: .82rem;
+        border-top: 1px solid color-mix(in srgb, currentColor 16%, transparent);
+      }}
+      .sex-share-gap strong {{ margin-left: .35rem; font-variant-numeric: tabular-nums; }}
+    </style>
+    <div class="sex-share">{''.join(rows)}{difference}</div>
+    """)
 
 
 st.set_page_config(page_title="타이타닉 승객 생존 분석", layout="wide")
@@ -83,7 +136,7 @@ with left.container(border=True):
     st.plotly_chart(survival_chart(view, "객실", list(CLASSES.values())), width="stretch")
 with right.container(border=True):
     st.markdown("**성별 생존율**")
-    st.plotly_chart(survival_chart(view, "성별", list(SEXES.values()), px.scatter), width="stretch")
+    show_survival_by_sex(view)
 
 with st.container(border=True):
     st.markdown("**나이대별 승객 수**")
