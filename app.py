@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 
 HERE = Path(__file__).parent
@@ -23,22 +24,63 @@ def load_passengers(path):
     )
 
 
-def survival_chart(data, group, order):
-    rates = (
-        data.groupby(group, as_index=False, sort=False)
-        .agg(생존율=("survived", "mean"), 인원=("survived", "size"), 생존=("survived", "sum"))
+def survival_summary(data, group):
+    return data.groupby(group, sort=False)["survived"].agg(
+        survivors="sum", total="size", rate="mean"
     )
+
+
+def selection_insight(data):
+    rates = survival_summary(data, "객실")["rate"].sort_values(ascending=False)
+    if len(rates) == 1:
+        return f"선택한 {rates.index[0]} 승객의 생존율은 **{rates.iloc[0]:.1%}**"
+    if rates.iloc[0] == rates.iloc[-1]:
+        return f"선택한 객실 등급의 생존율은 모두 **{rates.iloc[0]:.1%}**"
+    return (
+        f"선택한 승객 · **{rates.index[0]} {rates.iloc[0]:.1%}** · "
+        f"**{rates.index[-1]} {rates.iloc[-1]:.1%}** · 생존율 차이 "
+        f"**{(rates.iloc[0] - rates.iloc[-1]) * 100:.1f}%p**"
+    )
+
+
+def survival_heatmap(data):
+    classes, sexes = list(CLASSES.values()), list(SEXES.values())
+    grid = pd.MultiIndex.from_product([classes, sexes], names=["객실", "성별"])
+    summary = survival_summary(data, ["객실", "성별"]).reindex(grid)
+    rates = summary["rate"].to_numpy().reshape(len(classes), len(sexes))
+    labels = [
+        f"<b>{rate:.1%}</b><br>{survivors:.0f}/{total:.0f}명" if pd.notna(rate) else ""
+        for survivors, total, rate in summary.itertuples(index=False, name=None)
+    ]
+    figure = go.Figure(go.Heatmap(
+        x=sexes, y=classes, z=rates, zmin=0, zmax=1, xgap=5, ygap=5,
+        text=[labels[i:i + len(sexes)] for i in range(0, len(labels), len(sexes))],
+        texttemplate="%{text}", textfont=dict(color="#FFFFFF", size=14),
+        colorscale=[[0, "#26344A"], [1, "#107A7D"]], showscale=False,
+        hoverongaps=False, hovertemplate="%{y} · %{x}<br>%{text}<extra></extra>",
+    ))
+    figure.update_xaxes(side="top", fixedrange=True, showgrid=False)
+    figure.update_yaxes(autorange="reversed", fixedrange=True, showgrid=False)
+    figure.update_layout(height=219, margin=dict(l=8, r=8, t=27, b=0))
+    return figure
+
+
+def age_survival_chart(data):
+    starts = (data["age"] // 10).astype(int) * 10
+    rates = survival_summary(data.assign(나이대=starts), "나이대").sort_index().reset_index()
+    rates["나이대"] = rates["나이대"].map(lambda start: f"{start}~{start + 9}세")
     figure = px.bar(
-        rates, x=group, y="생존율", text="생존율", custom_data=["생존", "인원"],
-        category_orders={group: order}, color_discrete_sequence=["#007F83"],
+        rates, x="나이대", y="rate", text="rate", custom_data=["survivors", "total"],
+        color_discrete_sequence=[COLORS["생존"]],
+        category_orders={"나이대": [f"{start}~{start + 9}세" for start in range(0, 90, 10)]},
     )
     figure.update_traces(
         texttemplate="%{y:.1%}", textposition="outside", cliponaxis=False,
         hovertemplate="%{x}<br>생존율 %{y:.1%}<br>%{customdata[0]}명 생존 / %{customdata[1]}명<extra></extra>",
     )
-    figure.update_yaxes(range=[0, 1.05], tickformat=".0%", title_text="생존율")
+    figure.update_yaxes(range=[0, 1.08], tickformat=".0%", title_text="생존율")
     figure.update_xaxes(title_text=None)
-    figure.update_layout(height=265, margin=dict(l=8, r=8, t=18, b=8))
+    figure.update_layout(height=290, margin=dict(l=8, r=8, t=18, b=8))
     return figure
 
 
@@ -129,34 +171,43 @@ count_col, survived_col, rate_col = st.columns(3)
 count_col.metric("선택한 승객", f"{len(view):,}명", border=True)
 survived_col.metric("생존 승객", f"{survived:,}명", border=True)
 rate_col.metric("생존율", f"{survived / len(view):.1%}", border=True)
+st.markdown(selection_insight(view))
 
-left, right = st.columns(2)
+left, right = st.columns([1.25, 1])
 with left.container(border=True):
-    st.markdown("**객실 등급별 생존율**")
-    st.plotly_chart(survival_chart(view, "객실", list(CLASSES.values())), width="stretch")
+    st.markdown("**객실 등급 × 성별 생존율**")
+    st.plotly_chart(survival_heatmap(view), width="stretch", config={"displayModeBar": False})
+    st.caption("생존 인원 / 전체 인원 · 빈 칸은 선택 조건에 해당하는 승객이 없어요.")
 with right.container(border=True):
     st.markdown("**성별 생존율**")
     show_survival_by_sex(view)
 
 with st.container(border=True):
-    st.markdown("**나이대별 승객 수**")
+    st.markdown("**나이대별 생존 분포**")
     known_age = view.dropna(subset=["age"])
     if known_age.empty:
         st.info("현재 선택에는 나이가 기록된 승객이 없어요.")
     else:
-        age_histogram = px.histogram(
-            known_age, x="age", color="결과", color_discrete_map=COLORS,
-            category_orders={"결과": list(OUTCOMES.values())},
-            labels={"age": "나이 (세)"},
+        age_mode = st.segmented_control(
+            "나이 그래프 보기", ["인원수", "생존율"], default="인원수", label_visibility="collapsed"
         )
-        age_histogram.update_traces(xbins=dict(start=0, end=90, size=10), xhoverformat=".0f")
-        age_histogram.update_xaxes(dtick=10, range=[0, 90])
-        age_histogram.update_yaxes(title_text="승객 수 (명)")
-        age_histogram.update_layout(
-            height=290, margin=dict(l=8, r=8, t=10, b=8),
-            legend=dict(title_text="", orientation="h", x=0, y=1.10),
-        )
-        st.plotly_chart(age_histogram, width="stretch")
+        if age_mode == "생존율":
+            st.plotly_chart(age_survival_chart(known_age), width="stretch")
+            st.caption("표본이 적은 나이대는 몇 명의 차이로도 생존율이 크게 달라질 수 있어요.")
+        else:
+            age_histogram = px.histogram(
+                known_age, x="age", color="결과", color_discrete_map=COLORS,
+                category_orders={"결과": list(OUTCOMES.values())},
+                labels={"age": "나이 (세)"},
+            )
+            age_histogram.update_traces(xbins=dict(start=0, end=90, size=10), xhoverformat=".0f")
+            age_histogram.update_xaxes(dtick=10, range=[0, 90])
+            age_histogram.update_yaxes(title_text="승객 수 (명)")
+            age_histogram.update_layout(
+                height=290, margin=dict(l=8, r=8, t=10, b=8),
+                legend=dict(title_text="", orientation="h", x=0, y=1.10),
+            )
+            st.plotly_chart(age_histogram, width="stretch")
     if view["age"].isna().any():
         st.caption(f"나이가 기록되지 않은 {view['age'].isna().sum():,}명은 이 차트에서 제외했어요.")
 
